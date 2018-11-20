@@ -29,17 +29,14 @@ namespace Guytp.Data.DatabaseDeltaApplicator
                 DeltaApplicator applicator = new DeltaApplicator(argumentParser);
                 DeltaApplicationResults results = applicator.Apply();
                 Console.WriteLine(results.ToString());
+                if (!results.IsSuccess)
+                    return 1;
             }
             catch (Exception ex)
             {
                 Console.WriteLine("Fatal: Unhandled exception.\r\n" + ex);
                 return 2;
             }
-#if DEBUG
-            Console.WriteLine();
-            Console.Write("Press any key to exit... ");
-            Console.ReadKey(true);
-#endif
 
             // Return a success
             return 0;

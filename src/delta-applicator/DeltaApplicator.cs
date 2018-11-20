@@ -1,9 +1,8 @@
-﻿using Microsoft.SqlServer.Management.Common;
-using Microsoft.SqlServer.Management.Smo;
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Data.SqlClient;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 
@@ -68,11 +67,12 @@ namespace Guytp.Data.DatabaseDeltaApplicator
                 }
                 deltasToApply.Sort();
 
-                using (SqlConnection conn = new SqlConnection("Server=" + _argumentParser.DatabaseServer + "; Trusted_Connection=True;"))
+                using (SqlConnection conn = new SqlConnection("Server=" + _argumentParser.DatabaseServer + "; User Id=" + _argumentParser.DatabaseUsername + "; Password=" + _argumentParser.DatabasePassword + ";"))
                 {
                     // First create database if it does not already exist
                     conn.Open();
-                    statusMessages.Add("Connecting to " + _argumentParser.DatabaseServer);
+                    statusMessages.Add("Connecting to " + _argumentParser.DatabaseServer);                
+                    Console.WriteLine(statusMessages[statusMessages.Count - 1]);
                     SqlCommand comm = conn.CreateCommand();
                     comm.CommandType = CommandType.Text;
                     comm.CommandText = "SELECT 'Exists' FROM sys.databases WHERE [name] = @databaseName";
@@ -83,6 +83,7 @@ namespace Guytp.Data.DatabaseDeltaApplicator
                     {
                         comm.CommandText = "CREATE DATABASE [" + _argumentParser.DatabaseName + "]";
                         statusMessages.Add("Creating database " + _argumentParser.DatabaseName);
+                        Console.WriteLine(statusMessages[statusMessages.Count - 1]);
                         comm.ExecuteNonQuery();
                     }
 
@@ -105,6 +106,7 @@ namespace Guytp.Data.DatabaseDeltaApplicator
     CONSTRAINT PK_DatabaseVersionInformation PRIMARY KEY (ChangesetName, DeltaNumber)
 )";
                         statusMessages.Add("Creating DatabaseVersionInformation table");
+                        Console.WriteLine(statusMessages[statusMessages.Count - 1]);
                         comm.ExecuteNonQuery();
                     }
 
@@ -124,6 +126,7 @@ namespace Guytp.Data.DatabaseDeltaApplicator
                             }
                         }
                     statusMessages.Add("Determined " + alreadyApplied.Count + " existing deltas");
+                    Console.WriteLine(statusMessages[statusMessages.Count - 1]);
                     comm.Parameters.Clear();
 
                     // Check for any failed deltas on this changeset
@@ -139,7 +142,6 @@ namespace Guytp.Data.DatabaseDeltaApplicator
                     {
                         // Get a handle to the delta file and read it in
                         string correspondingFilename = deltasToApplyCorrespondingFilenames.First(df => df.StartsWith(delta + " "));
-                        string deltaSql = File.ReadAllText(Path.Combine(_argumentParser.DeltaPath, correspondingFilename));
                         lastDelta = delta;
 
                         // Add delta row saying we've started
@@ -151,9 +153,41 @@ namespace Guytp.Data.DatabaseDeltaApplicator
                         comm.ExecuteNonQuery();
 
                         // Apply the delta
-                        Server server = new Server(new ServerConnection(conn));
                         statusMessages.Add("Applying delta " + delta);
-                        server.ConnectionContext.ExecuteNonQuery(deltaSql);
+                        Console.WriteLine(statusMessages[statusMessages.Count - 1]);
+                        using (Process proc = new Process 
+                        {
+                            StartInfo = new ProcessStartInfo
+                            {
+                                FileName = "sqlcmd",
+                                Arguments = "-S \"" + _argumentParser.DatabaseServer + "\" -U \"" + _argumentParser.DatabaseUsername + "\" -P \"" + _argumentParser.DatabasePassword + "\" -d \"" + _argumentParser.DatabaseName + "\" -i \"" + Path.Combine(_argumentParser.DeltaPath, correspondingFilename) + "\"",
+                                UseShellExecute = false,
+                                RedirectStandardOutput = true,
+                                RedirectStandardError = true,
+                                CreateNoWindow = true
+                            }
+                        })
+                        {
+                            proc.Start();
+                            StreamReader[] readers = new StreamReader[] { proc.StandardOutput, proc.StandardError };
+                            while (true)
+                            {
+                                foreach (StreamReader reader in readers)
+                                    while (!reader.EndOfStream)
+                                    {
+                                        string line = reader.ReadLine();
+                                        statusMessages.Add(line);
+                                        Console.WriteLine(line);
+                                    }
+                                if (proc.HasExited)
+                                {
+                                    if (proc.ExitCode != 0)
+                                        // Delta has failed to apply so throw an error
+                                        throw new Exception("sqlcmd failed with error " + proc.ExitCode);
+                                    break;
+                                }
+                            }
+                        }
 
                         // Add delta row saying we've finished
                         comm.Parameters.Clear();

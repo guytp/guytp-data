@@ -105,9 +105,6 @@ namespace Guytp.Data.DatabaseDeltaApplicator
         public override string ToString()
         {
             string returnMessage = string.Empty;
-            if (StatusMessages != null)
-                foreach (string message in StatusMessages)
-                    returnMessage += message + Environment.NewLine;
             if (FailedDelta.HasValue && (SuccessfullyAppliedDeltas == null || SuccessfullyAppliedDeltas.Length == 0))
                 return returnMessage + "Failed to apply any deltas, failed at " + FailedDelta.Value + "." + (AlreadyAppliedDeltas != null && AlreadyAppliedDeltas.Length > 0 ? "  There are " + AlreadyAppliedDeltas.Length + " deltas already applied before this run." : string.Empty) + Environment.NewLine + Environment.NewLine + FailureReason;
             if (FailedDelta.HasValue)

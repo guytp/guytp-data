@@ -19,6 +19,10 @@ namespace Guytp.Data.DatabaseDeltaApplicator
         /// </summary>
         public string DatabaseServer { get; }
 
+        public string DatabaseUsername { get; }
+
+        public string DatabasePassword { get; }
+
         /// <summary>
         /// Gets the name of changeset being applied.
         /// </summary>
@@ -45,14 +49,16 @@ namespace Guytp.Data.DatabaseDeltaApplicator
         public ArgumentParser(string[] args)
         {
             // Validate parameters
-            if (args == null || args.Length != 4 || args.Any(a => string.IsNullOrEmpty(a)))
+            if (args == null || args.Length != 6 || args.Any(a => string.IsNullOrEmpty(a)))
                 return;
 
             // Store the values
             DatabaseServer = args[0];
-            DatabaseName = args[1];
-            ChangesetName = args[2];
-            DeltaPath = args[3];
+            DatabaseUsername = args[1];
+            DatabasePassword = args[2];
+            DatabaseName = args[3];
+            ChangesetName = args[4];
+            DeltaPath = args[5];
             if (!Directory.Exists(DeltaPath))
             {
                 IsValid = false;
@@ -70,7 +76,7 @@ namespace Guytp.Data.DatabaseDeltaApplicator
         /// </returns>
         public string GetHelpMessage()
         {
-            return "Usage: DatabaseDeltaApplicator <Database Server> <Database Name> <Changeset Name> <Path>";
+            return "Usage: DatabaseDeltaApplicator <Database Server> <Username> <Password> <Database Name> <Changeset Name> <Path>";
         }
     }
 }

@@ -40,6 +40,5 @@
 #
 ################################################################################
 
-packages\
-\.vs\Guytp.Data\DesignTimeBuild
-\.vs\Guytp.Data\v15\Server\sqlite3
+obj/
+bin/
