@@ -67,13 +67,13 @@ namespace Guytp.Data.DatabaseDeltaApplicator
                 }
                 deltasToApply.Sort();
 
-                using (SqlConnection conn = new SqlConnection("Server=" + _argumentParser.DatabaseServer + "; User Id=" + _argumentParser.DatabaseUsername + "; Password=" + _argumentParser.DatabasePassword + ";"))
+                using (SqlConnection connMaster = new SqlConnection("Server=" + _argumentParser.DatabaseServer + "; User Id=" + _argumentParser.DatabaseUsername + "; Password=" + _argumentParser.DatabasePassword + "; Database=master"))
                 {
                     // First create database if it does not already exist
-                    conn.Open();
-                    statusMessages.Add("Connecting to " + _argumentParser.DatabaseServer);                
+                    statusMessages.Add("Connecting to " + _argumentParser.DatabaseServer + " (master)");
                     Console.WriteLine(statusMessages[statusMessages.Count - 1]);
-                    SqlCommand comm = conn.CreateCommand();
+                    connMaster.Open();
+                    SqlCommand comm = connMaster.CreateCommand();
                     comm.CommandType = CommandType.Text;
                     comm.CommandText = "SELECT 'Exists' FROM sys.databases WHERE [name] = @databaseName";
                     comm.Parameters.AddWithValue("@databaseName", _argumentParser.DatabaseName);
@@ -86,123 +86,126 @@ namespace Guytp.Data.DatabaseDeltaApplicator
                         Console.WriteLine(statusMessages[statusMessages.Count - 1]);
                         comm.ExecuteNonQuery();
                     }
-
-                    // Switch to the correct database
-                    comm.CommandText = "USE [" + _argumentParser.DatabaseName + "]";
-                    comm.ExecuteNonQuery();
-
-                    // Now if we don't have the delta table, add it now
-                    comm.CommandText = "SELECT 'Exists' FROM sys.tables WHERE [name] = 'DatabaseVersionInformation'";
-                    response = comm.ExecuteScalar();
-                    if (response == null || response as string != "Exists")
+                    using (SqlConnection conn = new SqlConnection("Server=" + _argumentParser.DatabaseServer + "; User Id=" + _argumentParser.DatabaseUsername + "; Password=" + _argumentParser.DatabasePassword + "; Database=" + _argumentParser.DatabaseName))
                     {
-                        comm.CommandText = @"CREATE TABLE DatabaseVersionInformation
-(
-    ChangesetName NVARCHAR(200) NOT NULL,
-    DeltaNumber INT NOT NULL,
-    Filename NVARCHAR(MAX) NOT NULL,
-    ApplyStartTime DATETIME NOT NULL,
-    ApplyCompleteTime DATETIME,
-    CONSTRAINT PK_DatabaseVersionInformation PRIMARY KEY (ChangesetName, DeltaNumber)
-)";
-                        statusMessages.Add("Creating DatabaseVersionInformation table");
+                        statusMessages.Add("Connecting to " + _argumentParser.DatabaseServer + " ("+ _argumentParser.DatabaseName + ")");
                         Console.WriteLine(statusMessages[statusMessages.Count - 1]);
-                        comm.ExecuteNonQuery();
-                    }
+                        conn.Open();
+                        comm = conn.CreateCommand();
 
-                    // Now check for existing deltas that have been applied
-                    comm.CommandText = "SELECT DeltaNumber FROM DatabaseVersionInformation WHERE ChangesetName = @changesetName ORDER BY DeltaNumber ASC";
-                    comm.Parameters.AddWithValue("@changesetName", _argumentParser.ChangesetName);
-                    using (SqlDataReader reader = comm.ExecuteReader())
-                        while (reader.Read())
+                        // Now if we don't have the delta table, add it now
+                        comm.CommandText = "SELECT 'Exists' FROM sys.tables WHERE [name] = 'DatabaseVersionInformation'";
+                        response = comm.ExecuteScalar();
+                        if (response == null || response as string != "Exists")
                         {
-                            int delta = (int)reader[0];
-                            alreadyApplied.Add(delta);
-                            if (deltasToApply.Contains(delta))
-                            {
-                                deltasToApply.Remove(delta);
-                                string correspondingFilename = deltasToApplyCorrespondingFilenames.First(df => df.StartsWith(delta + " "));
-                                deltasToApplyCorrespondingFilenames.Remove(correspondingFilename);
-                            }
+                            comm.CommandText = @"CREATE TABLE DatabaseVersionInformation
+    (
+        ChangesetName NVARCHAR(200) NOT NULL,
+        DeltaNumber INT NOT NULL,
+        Filename NVARCHAR(MAX) NOT NULL,
+        ApplyStartTime DATETIME NOT NULL,
+        ApplyCompleteTime DATETIME,
+        CONSTRAINT PK_DatabaseVersionInformation PRIMARY KEY (ChangesetName, DeltaNumber)
+    )";
+                            statusMessages.Add("Creating DatabaseVersionInformation table");
+                            Console.WriteLine(statusMessages[statusMessages.Count - 1]);
+                            comm.ExecuteNonQuery();
                         }
-                    statusMessages.Add("Determined " + alreadyApplied.Count + " existing deltas");
-                    Console.WriteLine(statusMessages[statusMessages.Count - 1]);
-                    comm.Parameters.Clear();
 
-                    // Check for any failed deltas on this changeset
-                    comm.CommandText = "SELECT TOP 1 'Exists' FROM DatabaseVersionInformation WHERE ChangesetName = @changesetName AND ApplyCompleteTime IS NULL";
-                    comm.Parameters.AddWithValue("@changesetName", _argumentParser.ChangesetName);
-                    response = comm.ExecuteScalar();
-                    if (response != null && response as string == "Exists")
-                        return new DeltaApplicationResults(alreadyApplied.ToArray(), successful.ToArray(), statusMessages.ToArray(), 0, deltasToApply.ToArray(), "Database is in an inconsistent state with partially applied deltas for this changeset");
-                    comm.Parameters.Clear();
-
-                    // Now for each delta, let's apply them
-                    foreach (int delta in deltasToApply)
-                    {
-                        // Get a handle to the delta file and read it in
-                        string correspondingFilename = deltasToApplyCorrespondingFilenames.First(df => df.StartsWith(delta + " "));
-                        lastDelta = delta;
-
-                        // Add delta row saying we've started
-                        comm.Parameters.Clear();
-                        comm.Parameters.AddWithValue("@deltaNumber", delta);
+                        // Now check for existing deltas that have been applied
+                        comm.CommandText = "SELECT DeltaNumber FROM DatabaseVersionInformation WHERE ChangesetName = @changesetName ORDER BY DeltaNumber ASC";
                         comm.Parameters.AddWithValue("@changesetName", _argumentParser.ChangesetName);
-                        comm.Parameters.AddWithValue("@filename", correspondingFilename);
-                        comm.CommandText = "INSERT INTO DatabaseVersionInformation (ChangesetName, DeltaNumber, Filename, ApplyStartTime) VALUES(@changesetName, @deltaNumber, @filename, GETUTCDATE())";
-                        comm.ExecuteNonQuery();
-
-                        // Apply the delta
-                        statusMessages.Add("Applying delta " + delta);
-                        Console.WriteLine(statusMessages[statusMessages.Count - 1]);
-                        using (Process proc = new Process 
-                        {
-                            StartInfo = new ProcessStartInfo
+                        using (SqlDataReader reader = comm.ExecuteReader())
+                            while (reader.Read())
                             {
-                                FileName = "sqlcmd",
-                                Arguments = "-S \"" + _argumentParser.DatabaseServer + "\" -U \"" + _argumentParser.DatabaseUsername + "\" -P \"" + _argumentParser.DatabasePassword + "\" -d \"" + _argumentParser.DatabaseName + "\" -i \"" + Path.Combine(_argumentParser.DeltaPath, correspondingFilename) + "\"",
-                                UseShellExecute = false,
-                                RedirectStandardOutput = true,
-                                RedirectStandardError = true,
-                                CreateNoWindow = true
-                            }
-                        })
-                        {
-                            proc.Start();
-                            StreamReader[] readers = new StreamReader[] { proc.StandardOutput, proc.StandardError };
-                            while (true)
-                            {
-                                foreach (StreamReader reader in readers)
-                                    while (!reader.EndOfStream)
-                                    {
-                                        string line = reader.ReadLine();
-                                        statusMessages.Add(line);
-                                        Console.WriteLine(line);
-                                    }
-                                if (proc.HasExited)
+                                int delta = (int)reader[0];
+                                alreadyApplied.Add(delta);
+                                if (deltasToApply.Contains(delta))
                                 {
-                                    if (proc.ExitCode != 0)
-                                        // Delta has failed to apply so throw an error
-                                        throw new Exception("sqlcmd failed with error " + proc.ExitCode);
-                                    break;
+                                    deltasToApply.Remove(delta);
+                                    string correspondingFilename = deltasToApplyCorrespondingFilenames.First(df => df.StartsWith(delta + " "));
+                                    deltasToApplyCorrespondingFilenames.Remove(correspondingFilename);
                                 }
                             }
+                        statusMessages.Add("Determined " + alreadyApplied.Count + " existing deltas");
+                        Console.WriteLine(statusMessages[statusMessages.Count - 1]);
+                        comm.Parameters.Clear();
+
+                        // Check for any failed deltas on this changeset
+                        comm.CommandText = "SELECT TOP 1 'Exists' FROM DatabaseVersionInformation WHERE ChangesetName = @changesetName AND ApplyCompleteTime IS NULL";
+                        comm.Parameters.AddWithValue("@changesetName", _argumentParser.ChangesetName);
+                        response = comm.ExecuteScalar();
+                        if (response != null && response as string == "Exists")
+                            return new DeltaApplicationResults(alreadyApplied.ToArray(), successful.ToArray(), statusMessages.ToArray(), 0, deltasToApply.ToArray(), "Database is in an inconsistent state with partially applied deltas for this changeset");
+                        comm.Parameters.Clear();
+
+                        // Now for each delta, let's apply them
+                        foreach (int delta in deltasToApply)
+                        {
+                            // Get a handle to the delta file and read it in
+                            string correspondingFilename = deltasToApplyCorrespondingFilenames.First(df => df.StartsWith(delta + " "));
+                            lastDelta = delta;
+
+                            // Add delta row saying we've started
+                            comm.Parameters.Clear();
+                            comm.Parameters.AddWithValue("@deltaNumber", delta);
+                            comm.Parameters.AddWithValue("@changesetName", _argumentParser.ChangesetName);
+                            comm.Parameters.AddWithValue("@filename", correspondingFilename);
+                            comm.CommandText = "INSERT INTO DatabaseVersionInformation (ChangesetName, DeltaNumber, Filename, ApplyStartTime) VALUES(@changesetName, @deltaNumber, @filename, GETUTCDATE())";
+                            comm.ExecuteNonQuery();
+
+                            // Apply the delta
+                            statusMessages.Add("Applying delta " + delta);
+                            Console.WriteLine(statusMessages[statusMessages.Count - 1]);
+                            using (Process proc = new Process 
+                            {
+                                StartInfo = new ProcessStartInfo
+                                {
+                                    FileName = "sqlcmd",
+                                    Arguments = "-S \"" + _argumentParser.DatabaseServer + "\" -U \"" + _argumentParser.DatabaseUsername + "\" -P \"" + _argumentParser.DatabasePassword + "\" -d \"" + _argumentParser.DatabaseName + "\" -i \"" + Path.Combine(_argumentParser.DeltaPath, correspondingFilename) + "\"",
+                                    UseShellExecute = false,
+                                    RedirectStandardOutput = true,
+                                    RedirectStandardError = true,
+                                    CreateNoWindow = true
+                                }
+                            })
+                            {
+                                proc.Start();
+                                StreamReader[] readers = new StreamReader[] { proc.StandardOutput, proc.StandardError };
+                                while (true)
+                                {
+                                    foreach (StreamReader reader in readers)
+                                        while (!reader.EndOfStream)
+                                        {
+                                            string line = reader.ReadLine();
+                                            statusMessages.Add(line);
+                                            Console.WriteLine(line);
+                                        }
+                                    if (proc.HasExited)
+                                    {
+                                        if (proc.ExitCode != 0)
+                                            // Delta has failed to apply so throw an error
+                                            throw new Exception("sqlcmd failed with error " + proc.ExitCode);
+                                        break;
+                                    }
+                                }
+                            }
+
+                            // Add delta row saying we've finished
+                            comm.Parameters.Clear();
+                            comm.Parameters.AddWithValue("@deltaNumber", delta);
+                            comm.Parameters.AddWithValue("@changesetName", _argumentParser.ChangesetName);
+                            comm.CommandText = "UPDATE DatabaseVersionInformation SET ApplyCompleteTime = GETUTCDATE() WHERE ChangesetName = @changesetName AND DeltaNumber = @deltaNumber";
+                            comm.ExecuteNonQuery();
+
+                            // Mark this as successful
+                            successful.Add(delta);
                         }
 
-                        // Add delta row saying we've finished
-                        comm.Parameters.Clear();
-                        comm.Parameters.AddWithValue("@deltaNumber", delta);
-                        comm.Parameters.AddWithValue("@changesetName", _argumentParser.ChangesetName);
-                        comm.CommandText = "UPDATE DatabaseVersionInformation SET ApplyCompleteTime = GETUTCDATE() WHERE ChangesetName = @changesetName AND DeltaNumber = @deltaNumber";
-                        comm.ExecuteNonQuery();
+                        // Return a success
+                        return new DeltaApplicationResults(alreadyApplied.ToArray(), successful.ToArray(), statusMessages.ToArray());
 
-                        // Mark this as successful
-                        successful.Add(delta);
                     }
-
-                    // Return a success
-                    return new DeltaApplicationResults(alreadyApplied.ToArray(), successful.ToArray(), statusMessages.ToArray());
-
                 }
             }
             catch (Exception ex)
